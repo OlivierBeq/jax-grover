@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=84", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jax-grover"
+version = "0.0.1-dev"
+description = "A JAX implementation of the GROVER molecular representation model (dual-view GTransformer encoder)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "jax",
+    "numpy",
+    "rdkit",
+]
+
+[project.optional-dependencies]
+convert = ["torch"]
+testing = ["pytest", "torch"]
+lint = ["ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 160
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+ignore = ["E741"]  # ambiguous variable name - GROVER uses q/k/v, a1/a2, etc.
+
+[tool.ruff.lint.isort]
+known-first-party = ["jax_grover"]
