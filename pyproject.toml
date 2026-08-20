@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jax-grover"
-version = "0.0.1-dev"
+version = "0.1.0"
 description = "A JAX implementation of the GROVER molecular representation model (dual-view GTransformer encoder)"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "jax",
     "numpy",
