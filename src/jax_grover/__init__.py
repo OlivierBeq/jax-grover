@@ -1,4 +1,4 @@
-__version__ = "0.0.1-dev"
+__version__ = "0.1.0"
 
 from .config import GroverConfig
 from .convert import edge_node_fdim, load_grover_checkpoint, params_from_state_dict
