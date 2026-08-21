@@ -5,6 +5,7 @@ lazily, see ``encoder.bond_init_message``).
 """
 
 from collections.abc import Sequence
+from concurrent.futures import Executor
 from dataclasses import dataclass
 
 import numpy as np
@@ -120,8 +121,15 @@ def batch_from_data_list(data_list: Sequence[MolData]) -> Batch:
     )
 
 
-def smiles_list_to_batch(smiles_list: list[str]) -> Batch:
-    return batch_from_data_list([smiles_to_data(s) for s in smiles_list])
+def smiles_list_to_batch(smiles_list: list[str], executor: Executor | None = None) -> Batch:
+    """Parse + featurize ``smiles_list`` into a collated ``Batch``. If
+    ``executor`` is given, SMILES->``MolData`` conversion runs on it instead
+    of serially in-process."""
+    if executor is not None:
+        data_list = list(executor.map(smiles_to_data, smiles_list))
+    else:
+        data_list = [smiles_to_data(s) for s in smiles_list]
+    return batch_from_data_list(data_list)
 
 
 def bond_init_message(x: np.ndarray, edge_index: np.ndarray, edge_attr: np.ndarray) -> np.ndarray:
