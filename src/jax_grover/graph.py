@@ -132,6 +132,70 @@ def smiles_list_to_batch(smiles_list: list[str], executor: Executor | None = Non
     return batch_from_data_list(data_list)
 
 
+# Min padded atom/edge counts, doubled until they cover a batch. Caps the
+# number of distinct JIT shapes at O(log2(n/base)), so calls reuse compiles.
+_ATOM_BUCKET_BASE = 512
+_EDGE_BUCKET_BASE = 1024  # even: edges are always reverse pairs
+
+
+def _bucket_ceil(n: int, base: int) -> int:
+    size = base
+    while size < n:
+        size *= 2
+    return size
+
+
+def pad_batch(batch: Batch, num_graphs: int) -> Batch:
+    """Pad ``batch`` to a fixed, bucketed shape for stable JIT compilation.
+
+    Appends dummy atoms/edges with no edge touching a real atom, all
+    assigned to one padding graph slot at index ``num_graphs - 1`` (must
+    exceed ``batch.num_graphs``). Since every encoder op is either per-row
+    or an edge_index/rev_index-keyed aggregation, the padding can't affect
+    real values; the caller drops its pooled output. Real outputs are
+    bit-for-bit identical to running ``batch`` unpadded.
+    """
+    if num_graphs <= batch.num_graphs:
+        raise ValueError(f"num_graphs ({num_graphs}) must exceed batch.num_graphs ({batch.num_graphs}) to leave a padding slot.")
+
+    real_atoms = batch.x.shape[0]
+    real_edges = batch.edge_index.shape[1]
+    # +1: always leave one dummy atom to anchor padding edges on.
+    target_atoms = _bucket_ceil(real_atoms + 1, _ATOM_BUCKET_BASE)
+    target_edges = _bucket_ceil(real_edges, _EDGE_BUCKET_BASE)
+    n_pad_atoms = target_atoms - real_atoms
+    n_pad_edges = target_edges - real_edges
+    pad_graph = num_graphs - 1
+    anchor = real_atoms  # index of the first padding atom
+
+    x = np.concatenate([batch.x, np.zeros((n_pad_atoms, batch.x.shape[1]), dtype=batch.x.dtype)], axis=0)
+    atom_batch = np.concatenate([batch.atom_batch, np.full((n_pad_atoms,), pad_graph, dtype=batch.atom_batch.dtype)])
+
+    if n_pad_edges > 0:
+        # Self-loops on `anchor` only. Paired 2k/2k+1 reverses, as in mol_to_data.
+        pad_edge_index = np.full((2, n_pad_edges), anchor, dtype=batch.edge_index.dtype)
+        pad_edge_attr = np.zeros((n_pad_edges, batch.edge_attr.shape[1]), dtype=batch.edge_attr.dtype)
+        ids = np.arange(n_pad_edges, dtype=batch.rev_index.dtype)
+        pad_rev_index = np.where(ids % 2 == 0, ids + 1, ids - 1) + real_edges
+        edge_index = np.concatenate([batch.edge_index, pad_edge_index], axis=1)
+        edge_attr = np.concatenate([batch.edge_attr, pad_edge_attr], axis=0)
+        rev_index = np.concatenate([batch.rev_index, pad_rev_index], axis=0)
+    else:
+        edge_index, edge_attr, rev_index = batch.edge_index, batch.edge_attr, batch.rev_index
+
+    edge_batch = atom_batch[edge_index[0]] if edge_index.shape[1] > 0 else np.zeros((0,), dtype=batch.edge_batch.dtype)
+
+    return Batch(
+        x=x,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        rev_index=rev_index,
+        atom_batch=atom_batch,
+        edge_batch=edge_batch,
+        num_graphs=num_graphs,
+    )
+
+
 def bond_init_message(x: np.ndarray, edge_index: np.ndarray, edge_attr: np.ndarray) -> np.ndarray:
     """Directed-bond init message: concat(source atom features, bond features)."""
     return np.concatenate([x[edge_index[0]], edge_attr], axis=-1)

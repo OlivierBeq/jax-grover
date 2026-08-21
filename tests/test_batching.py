@@ -3,9 +3,10 @@ Python-loop reimplementations (not the vectorized production code path)."""
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from jax_grover.batch_ops import aggregate_atom_view, aggregate_bond_view, segment_mean
-from jax_grover.graph import smiles_list_to_batch, smiles_to_data
+from jax_grover.graph import pad_batch, smiles_list_to_batch, smiles_to_data
 
 from .conftest import TEST_SMILES
 
@@ -110,3 +111,55 @@ def test_segment_mean_matches_naive_reference_and_handles_empty_groups():
 
     np.testing.assert_allclose(ours, naive, atol=1e-6)
     np.testing.assert_array_equal(ours[2], np.zeros(3, dtype=np.float32))  # empty group -> zero vector
+
+
+def test_pad_batch_leaves_real_atoms_edges_graphs_untouched():
+    batch = smiles_list_to_batch(TEST_SMILES)
+    padded = pad_batch(batch, num_graphs=batch.num_graphs + 1)
+
+    real_atoms = batch.x.shape[0]
+    real_edges = batch.edge_index.shape[1]
+
+    np.testing.assert_array_equal(padded.x[:real_atoms], batch.x)
+    np.testing.assert_array_equal(padded.edge_index[:, :real_edges], batch.edge_index)
+    np.testing.assert_array_equal(padded.edge_attr[:real_edges], batch.edge_attr)
+    np.testing.assert_array_equal(padded.rev_index[:real_edges], batch.rev_index)
+    np.testing.assert_array_equal(padded.atom_batch[:real_atoms], batch.atom_batch)
+    np.testing.assert_array_equal(padded.edge_batch[:real_edges], batch.edge_batch)
+
+    assert (padded.edge_index[:, real_edges:] >= real_atoms).all()  # never a real atom
+    assert (padded.atom_batch[real_atoms:] == padded.num_graphs - 1).all()  # dedicated pad slot
+    if padded.edge_batch.shape[0] > real_edges:
+        assert (padded.edge_batch[real_edges:] == padded.num_graphs - 1).all()
+
+
+def test_pad_batch_preserves_aggregation_for_real_atoms():
+    batch = smiles_list_to_batch(TEST_SMILES)
+    padded = pad_batch(batch, num_graphs=batch.num_graphs + 1)
+    real_atoms = batch.x.shape[0]
+    n_pad_atoms = padded.x.shape[0] - real_atoms
+
+    rng = np.random.default_rng(0)
+    message = rng.standard_normal((real_atoms, 8)).astype(np.float32)
+    padded_message = np.concatenate([message, rng.standard_normal((n_pad_atoms, 8)).astype(np.float32)])
+
+    unpadded_out = np.asarray(aggregate_atom_view(jnp.asarray(message), jnp.asarray(batch.edge_index), real_atoms))
+    padded_out = np.asarray(aggregate_atom_view(jnp.asarray(padded_message), jnp.asarray(padded.edge_index), padded.x.shape[0]))
+
+    np.testing.assert_array_equal(padded_out[:real_atoms], unpadded_out)  # non-zero pad message can't leak in
+
+
+def test_pad_batch_rejects_insufficient_num_graphs():
+    batch = smiles_list_to_batch(TEST_SMILES)
+    with pytest.raises(ValueError):
+        pad_batch(batch, num_graphs=batch.num_graphs)
+
+
+def test_pad_batch_shapes_are_bucketed_and_stable_across_sizes():
+    small = pad_batch(smiles_list_to_batch(TEST_SMILES[:2]), num_graphs=257)
+    large = pad_batch(smiles_list_to_batch(TEST_SMILES), num_graphs=257)
+
+    # Both tiny enough to land in the same bucket -> same compiled shape.
+    assert small.x.shape[0] == large.x.shape[0]
+    assert small.edge_index.shape[1] == large.edge_index.shape[1]
+    assert small.num_graphs == large.num_graphs == 257

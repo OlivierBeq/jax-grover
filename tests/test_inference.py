@@ -77,6 +77,23 @@ def test_chunking_does_not_change_results(preloaded_params_config):
     np.testing.assert_allclose(whole, chunked, atol=1e-5, rtol=1e-5)
 
 
+def test_embed_smiles_matches_unpadded_fingerprint(preloaded_params_config):
+    """embed_smiles pads each chunk internally (graph.pad_batch); check it
+    matches grover_fingerprint run unpadded on the same molecules."""
+    from jax_grover.fingerprint import grover_fingerprint
+    from jax_grover.graph import smiles_list_to_batch
+
+    smiles_list = ["CCO", "c1ccccc1", "CC(=O)O", "[NH4+]", "C1CC1"]
+    model = _model(preloaded_params_config)
+    padded_result = model.embed_smiles(smiles_list, chunk_size=len(smiles_list))
+
+    params, config = preloaded_params_config
+    batch = smiles_list_to_batch(smiles_list)
+    unpadded_result = np.asarray(grover_fingerprint(params, config, batch, fingerprint_source=model.fingerprint_source))
+
+    np.testing.assert_allclose(padded_result, unpadded_result, atol=1e-5, rtol=1e-5)
+
+
 def test_embed_smiles_matches_golden_fixture(preloaded_params_config):
     """Cross-check GroverModel's wiring end-to-end against the same frozen
     golden fixture test_real_checkpoints.py verifies against."""

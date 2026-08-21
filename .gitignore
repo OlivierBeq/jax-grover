@@ -5,3 +5,6 @@ __pycache__/
 build/
 dist/
 *.pt
+.idea/
+.vscode/
+.DS_Store

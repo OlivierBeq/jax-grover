@@ -11,7 +11,7 @@ import numpy as np
 
 from .config import GroverConfig
 from .fingerprint import ModelType, grover_fingerprint, load_grover_encoder
-from .graph import smiles_list_to_batch
+from .graph import pad_batch, smiles_list_to_batch
 
 FingerprintSource = Literal["atom", "bond", "both"]
 
@@ -104,7 +104,13 @@ class GroverModel:
     ) -> np.ndarray:
         """Embed one or more SMILES into GROVER fingerprint(s), chunked
         internally by ``chunk_size``. Returns ``[fingerprint_dim]`` for a
-        single string, ``[n, fingerprint_dim]`` for a list."""
+        single string, ``[n, fingerprint_dim]`` for a list.
+
+        Each chunk is padded to a bucketed shape (``graph.pad_batch``)
+        before the JIT-compiled encoder, then sliced back. Keeps compiled
+        shapes few and stable across calls sharing ``chunk_size``, avoiding
+        a recompile per chunk, with identical output to running unpadded.
+        """
         source = fingerprint_source if fingerprint_source is not None else self.fingerprint_source
         single = isinstance(smiles, str)
         smiles_list = [smiles] if single else list(smiles)
@@ -117,8 +123,9 @@ class GroverModel:
         for start in range(0, n, chunk_size):
             chunk = smiles_list[start : start + chunk_size]
             batch = smiles_list_to_batch(chunk, executor=self._executor)
-            fp = grover_fingerprint(self.params, self.config, batch, fingerprint_source=source)
-            parts.append(np.asarray(fp))
+            padded = pad_batch(batch, num_graphs=chunk_size + 1)
+            fp = grover_fingerprint(self.params, self.config, padded, fingerprint_source=source)
+            parts.append(np.asarray(fp)[: len(chunk)])
 
         result = np.concatenate(parts, axis=0)
         return result[0] if single else result
