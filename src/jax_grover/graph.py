@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import numpy as np
 from rdkit import Chem
 
-from .features import MolFeatureContext, atom_feature_dim, atom_features, bond_feature_dim, bond_features
+from .features import atom_feature_dim, atom_features_array, bond_feature_dim, bond_features_array
 
 
 @dataclass
@@ -32,39 +32,29 @@ class MolData:
 
 def mol_to_data(mol: Chem.rdchem.Mol, smiles: str | None = None) -> MolData:
     """Build a ``MolData`` from an already-parsed RDKit mol."""
-    context = MolFeatureContext(mol)
-    n_atoms = mol.GetNumAtoms()
+    x = atom_features_array(mol)
 
-    x = np.zeros((n_atoms, atom_feature_dim()), dtype=np.float32)
-    for atom in mol.GetAtoms():
-        x[atom.GetIdx()] = atom_features(atom, context)
+    # Sort by (min, max) atom idx to match GetBondBetweenAtoms's O(n^2) traversal
+    # order, but in O(E log E).
+    bonds = sorted(mol.GetBonds(), key=lambda b: (min(b.GetBeginAtomIdx(), b.GetEndAtomIdx()), max(b.GetBeginAtomIdx(), b.GetEndAtomIdx())))
+    n_real_bonds = len(bonds)
 
-    edge_index_list = []
-    edge_attr_list = []
-    rev_index_list = []
-    n_bonds = 0
-    for a1 in range(n_atoms):
-        for a2 in range(a1 + 1, n_atoms):
-            bond = mol.GetBondBetweenAtoms(a1, a2)
-            if bond is None:
-                continue
+    if n_real_bonds > 0:
+        fbond = bond_features_array(bonds)  # (n_real_bonds, 14)
+        a1 = np.fromiter((min(b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in bonds), dtype=np.int32, count=n_real_bonds)
+        a2 = np.fromiter((max(b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in bonds), dtype=np.int32, count=n_real_bonds)
 
-            fbond = bond_features(bond)
-            b1 = n_bonds
-            b2 = b1 + 1
+        n_bonds = 2 * n_real_bonds
+        edge_index = np.empty((2, n_bonds), dtype=np.int32)
+        edge_index[0, 0::2] = a1  # b1 = a1 --> a2
+        edge_index[1, 0::2] = a2
+        edge_index[0, 1::2] = a2  # b2 = a2 --> a1
+        edge_index[1, 1::2] = a1
 
-            edge_index_list.append((a1, a2))  # b1 = a1 --> a2
-            edge_index_list.append((a2, a1))  # b2 = a2 --> a1
-            edge_attr_list.append(fbond)
-            edge_attr_list.append(fbond)
-            rev_index_list.append(b2)
-            rev_index_list.append(b1)
-            n_bonds += 2
+        edge_attr = np.repeat(fbond, 2, axis=0)
 
-    if n_bonds > 0:
-        edge_index = np.array(edge_index_list, dtype=np.int32).T
-        edge_attr = np.array(edge_attr_list, dtype=np.float32)
-        rev_index = np.array(rev_index_list, dtype=np.int32)
+        b_ids = np.arange(n_bonds, dtype=np.int32)
+        rev_index = np.where(b_ids % 2 == 0, b_ids + 1, b_ids - 1).astype(np.int32)
     else:
         edge_index = np.zeros((2, 0), dtype=np.int32)
         edge_attr = np.zeros((0, bond_feature_dim()), dtype=np.float32)
